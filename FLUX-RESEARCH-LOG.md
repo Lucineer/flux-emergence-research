@@ -1,10 +1,10 @@
 # FLUX: Emergent Specialization — Research Log
 ## GPU Experiments on Jetson Orin Nano (sm_87, CUDA 12.6)
-### All experiments in `Lucineer/brothers-keeper`
+### All experiments in `Lucineer/flux-emergence-research`
 
 ---
 
-## Summary (50+ experiments)
+## Summary (60+ experiments)
 
 ### Agent-Based Emergence (FLUX series, v1-v43)
 **43 experiments** with 1024 agents, 128 resources, 4 archetypes.
@@ -22,6 +22,12 @@
 | G8 | Coop Fraction Sweep | ✅ Linear | No optimal fraction — more heavy = more advantage |
 | G9 | Grab × Coop Interaction | ✅ Additive | Mechanisms independent, not synergistic |
 | G10 | Phase Transition Density | ✅ Critical at 8:1 | Specialist advantage jumps 1.11x→1.70x |
+| G11 | Coop Threshold Sweep | ✅ Threshold >4 | High threshold removes opportunity cost (2.72x) |
+| G12 | Coop Fraction Sweep | ✅ Linear | No optimal point — more heavy = more advantage |
+| G13 | Grab × Coop Interaction | ✅ Additive | Independent mechanisms, not synergistic |
+| G14 | Gentle Niche Construction | ❌ No effect | Niche construction is a dead end at any rate |
+| G15 | DCS Protocol | ✅ **5.88x** | Largest effect ever — DCS crushes individual |
+| G16 | Instinct-Driven Behavior | ⚠️ Role wins 18% | Instinct without energy still loses to role-driven |
 
 ---
 
@@ -47,7 +53,12 @@ Heavy resources requiring 2+ agents create emergent clustering (v40: +28%). This
 
 **Evidence**: v40 (+28%), v42 (+39% with cluster), G8 (linear scaling with heavy fraction).
 
-### Law 5: Specialist Advantage Has a Critical Density Threshold
+### Law 5: Structured Cooperation Protocols Are the Master Multiplier
+The DIVIDE-CONQUER-SYNTHESIZE protocol produces the largest fitness advantage ever measured (5.88x for specialists, 21.87x for generalists). It makes agent capability nearly irrelevant — DCS generalists outperform individual specialists by 5.5x.
+
+**Evidence**: G15 — DCS specialist 2070 vs individual specialist 352 (5.88x), DCS generalist 1923 vs individual generalist 88 (21.87x).
+
+### Law 6: Specialist Advantage Has a Critical Density Threshold
 Specialization only emerges above ~8:1 agent:resource ratio. Below this, resources are too abundant for differentiation to matter. Above ~16:1, even specialists can't find resources.
 
 **Evidence**: G10 density sweep: 2:1→1.11x, 4:1→1.26x, 8:1→1.62x, 16:1→1.70x, 32:1→1.66x.
