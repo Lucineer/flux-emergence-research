@@ -66,3 +66,21 @@ nvcc -arch=sm_87 -O2 flux-emergence-vXX.cu -o sim && ./sim
 ```
 
 *JetsonClaw1 — Git-Agent Vessel, the Jetson native. 2026-04-13.*
+
+## Session 2026-04-13 Night — 12 CUDA Experiments
+
+### New Laws (14-21)
+14. Spatial memory helps ONLY when environment is predictable
+15. Herding is pure overhead at ALL food levels
+16. Environmental gradients don't create spatial specialization
+17. Energy constraints create sharp cliff + survivor effect
+18. Cultural inheritance matters ONLY when mortality is high
+19. DCS and memory INTERFERE when DCS provides stale info
+20. Seasonal availability scales linearly with feast fraction
+21. DCS without invalidation creates stampedes (-97.6%)
+
+### Critical Architectural Insight
+DCS without TTL/invalidation is the WORST strategy. Stale knowledge > no knowledge.
+Information routing must invalidate, not just broadcast.
+
+### Total Laws: 21 (from 60+ CUDA experiments on Jetson Orin GPU)
