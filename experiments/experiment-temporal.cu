@@ -1,97 +1,87 @@
-// experiment-temporal.cu — Temporal Coordination
-// Hookers mark, launchers collect. Tests sequential vs simultaneous.
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
+#include <cuda_runtime.h>
 
-#define GRID 128
-#define NA 512
-#define NR 150
+#define NA 4096
+#define FOOD 400
+#define SZ 256
+#define BLK 128
 #define STEPS 3000
-#define TRIALS 5
 
-struct A { float x,y; int type,col; float spd; };
-struct R { float x,y; int active,marked,mt; };
+__device__ int ax[NA],ay[NA],aseed[NA];
+__device__ int fx[FOOD],fy[FOOD],falive[FOOD];
+__device__ float ftimer[FOOD];
+__device__ int dcs_x[1],dcs_y[1],dcs_v[1];
+__device__ int step_col[STEPS]; // collection per step (atomic)
 
-__device__ int d_tot,d_dcy;
-__device__ float rng(unsigned int *s){*s=*s*1103515245u+12345u;return(float)(*s&0x7FFFFFFFu)/(float)0x7FFFFFFFu;}
-
-__global__ void rst(){if(threadIdx.x==0&&blockIdx.x==0){d_tot=0;d_dcy=0;}}
-__global__ void iA(A *a,int n,float hr,unsigned int s){
-    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;unsigned int r=s+i*7919;
-    a[i].x=rng(&r)*GRID;a[i].y=rng(&r)*GRID;a[i].type=(i<(int)(n*hr))?0:1;a[i].col=0;a[i].spd=3.0f+rng(&r)*2.0f;}
-__global__ void iR(R *r,int n,unsigned int s){
-    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n)return;unsigned int r2=s+i*65537;
-    r[i].x=rng(&r2)*GRID;r[i].y=rng(&r2)*GRID;r[i].active=1;r[i].marked=0;r[i].mt=-1;}
-
-__global__ void sim(A *a,int na,R *r,int nr,unsigned int s,int step){
-    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=na)return;unsigned int r2=s+i*131+step*997;
-    a[i].x=fmodf(a[i].x+(rng(&r2)-0.5f)*a[i].spd*2+GRID,GRID);
-    a[i].y=fmodf(a[i].y+(rng(&r2)-0.5f)*a[i].spd*2+GRID,GRID);
-    for(int j=0;j<nr;j++){if(!r[j].active)continue;float dx=a[i].x-r[j].x,dy=a[i].y-r[j].y;
-    if(dx>GRID*0.5f)dx-=GRID;if(dx<-GRID*0.5f)dx+=GRID;if(dy>GRID*0.5f)dy-=GRID;if(dy<-GRID*0.5f)dy+=GRID;
-    if(dx*dx+dy*dy<9.0f){r[j].active=0;a[i].col++;atomicAdd(&d_tot,1);break;}}}
-
-__global__ void seq(A *a,int na,R *r,int nr,unsigned int s,int step,int md,int dc){
-    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=na)return;unsigned int r2=s+i*131+step*997;
-    a[i].x=fmodf(a[i].x+(rng(&r2)-0.5f)*a[i].spd*2+GRID,GRID);
-    a[i].y=fmodf(a[i].y+(rng(&r2)-0.5f)*a[i].spd*2+GRID,GRID);
-    if(a[i].type==0){for(int j=0;j<nr;j++){if(!r[j].active||r[j].marked)continue;
-    float dx=a[i].x-r[j].x,dy=a[i].y-r[j].y;
-    if(dx>GRID*0.5f)dx-=GRID;if(dx<-GRID*0.5f)dx+=GRID;if(dy>GRID*0.5f)dy-=GRID;if(dy<-GRID*0.5f)dy+=GRID;
-    if(dx*dx+dy*dy<9.0f){r[j].marked=1;r[j].mt=step;break;}}
-    }else{for(int j=0;j<nr;j++){if(!r[j].active||r[j].marked!=1)continue;
-    if(step-r[j].mt<md)continue;if(step-r[j].mt>dc){r[j].active=0;r[j].marked=0;atomicAdd(&d_dcy,1);continue;}
-    float dx=a[i].x-r[j].x,dy=a[i].y-r[j].y;
-    if(dx>GRID*0.5f)dx-=GRID;if(dx<-GRID*0.5f)dx+=GRID;if(dy>GRID*0.5f)dy-=GRID;if(dy<-GRID*0.5f)dy+=GRID;
-    if(dx*dx+dy*dy<9.0f){r[j].active=0;r[j].marked=2;a[i].col++;atomicAdd(&d_tot,1);break;}}}}
-
-__global__ void rsp(R *r,int n,unsigned int s){
-    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=n||r[i].active)return;unsigned int r2=s+i*3571;
-    r[i].x=rng(&r2)*GRID;r[i].y=rng(&r2)*GRID;r[i].active=1;r[i].marked=0;r[i].mt=-1;}
-
-void run_sim(A *da,R *dr,int bs,int ag,int rg,int *out){
-    int tot=0;for(int t=0;t<TRIALS;t++){unsigned int s=(unsigned int)time(NULL)+t*50000+99999;
-    rst<<<1,1>>>();iA<<<ag,bs>>>(da,NA,0.5f,s);iR<<<rg,bs>>>(dr,NR,s+1);cudaDeviceSynchronize();
-    for(int step=0;step<STEPS;step++){sim<<<ag,bs>>>(da,NA,dr,NR,s,step);rsp<<<rg,bs>>>(dr,NR,s+step);cudaDeviceSynchronize();}
-    int h;cudaMemcpyFromSymbol(&h,d_tot,sizeof(int));tot+=h;}*out=tot/TRIALS;}
-
-void run_seq(A *da,R *dr,int bs,int ag,int rg,int md,int dc,int *out_t,int *out_d){
-    int tot=0,dcy=0;for(int t=0;t<TRIALS;t++){unsigned int s=(unsigned int)time(NULL)+t*50000+md*20000+dc*5000;
-    rst<<<1,1>>>();iA<<<ag,bs>>>(da,NA,0.5f,s);iR<<<rg,bs>>>(dr,NR,s+1);cudaDeviceSynchronize();
-    for(int step=0;step<STEPS;step++){seq<<<ag,bs>>>(da,NA,dr,NR,s,step,md,dc);rsp<<<rg,bs>>>(dr,NR,s+step);cudaDeviceSynchronize();}
-    int h1,h2;cudaMemcpyFromSymbol(&h1,d_tot,sizeof(int));cudaMemcpyFromSymbol(&h2,d_dcy,sizeof(int));tot+=h1;dcy+=h2;}
-    *out_t=tot/TRIALS;*out_d=dcy/TRIALS;}
-
+__device__ int rn(int*s){*s=(*s*1103515245+12345)&0x7fffffff;return*s;}
+__device__ int to(int v){return((v%SZ)+SZ)%SZ;}
+__device__ int td(int x1,int y1,int x2,int y2){
+    int dx=x1-x2;if(dx<-SZ/2)dx+=SZ;if(dx>SZ/2)dx-=SZ;
+    int dy=y1-y2;if(dy<-SZ/2)dy+=SZ;if(dy>SZ/2)dy-=SZ;
+    return dx*dx+dy*dy;
+}
+__global__ void init_w(int seed){
+    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=NA)return;
+    aseed[i]=seed+i*137;ax[i]=rn(&aseed[i])%SZ;ay[i]=rn(&aseed[i])%SZ;
+}
+__global__ void init_f(int seed){
+    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=FOOD)return;
+    int s=seed+i*777;fx[i]=s%SZ;fy[i]=(s*31)%SZ;falive[i]=1;ftimer[i]=0;
+}
+__global__ void do_resp(int unused){
+    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=FOOD)return;
+    if(!falive[i]){ftimer[i]+=1.0f;if(ftimer[i]>50.0f){falive[i]=1;ftimer[i]=0;}}
+}
+__global__ void ss(int step,int use_dcs){
+    int i=blockIdx.x*blockDim.x+threadIdx.x;if(i>=NA)return;
+    int g2=144;
+    int bd=999999,bf=-1;
+    for(int f=0;f<FOOD;f++){if(!falive[f])continue;int d=td(ax[i],ay[i],fx[f],fy[f]);if(d<bd){bd=d;bf=f;}}
+    if(use_dcs&&dcs_v[0]){
+        int dd=td(ax[i],ay[i],dcs_x[0],dcs_y[0]);
+        if(dd<g2*4&&bd>dd){
+            int dx=dcs_x[0]-ax[i],dy=dcs_y[0]-ay[i];
+            if(dx<-SZ/2)dx+=SZ;if(dx>SZ/2)dx-=SZ;if(dy<-SZ/2)dy+=SZ;if(dy>SZ/2)dy-=SZ;
+            if(dx!=0||dy!=0){ax[i]=to(ax[i]+dx/2);ay[i]=to(ay[i]+dy/2);}
+            if(dd<=g2&&bf>=0&&falive[bf]){falive[bf]=0;atomicAdd(&step_col[step],1);dcs_x[0]=fx[bf];dcs_y[0]=fy[bf];dcs_v[0]=1;}
+            return;
+        }
+    }
+    if(bf>=0&&bd<=g2){
+        if(falive[bf]){falive[bf]=0;atomicAdd(&step_col[step],1);dcs_x[0]=fx[bf];dcs_y[0]=fy[bf];dcs_v[0]=1;}
+    }else if(bf>=0){
+        int dx=fx[bf]-ax[i],dy=fy[bf]-ay[i];
+        if(dx<-SZ/2)dx+=SZ;if(dx>SZ/2)dx-=SZ;if(dy<-SZ/2)dy+=SZ;if(dy>SZ/2)dy-=SZ;
+        if(dx!=0||dy!=0){ax[i]=to(ax[i]+dx);ay[i]=to(ay[i]+dy);}
+    }
+}
 int main(){
-    printf("=== Temporal Coordination ===\nAgents:%d Resources:%d Steps:%d Trials:%d\n\n",NA,NR,STEPS,TRIALS);
-    int bs=256,ag=(NA+bs-1)/bs,rg=(NR+bs-1)/bs;
-    A *da;R *dr;cudaMalloc(&da,NA*sizeof(A));cudaMalloc(&dr,NR*sizeof(R));
-    srand(time(NULL));
-
-    // Hooker ratio sweep
-    printf("HookerRatio Total     Decayed  PerAgent\n");
-    for(float hr=0.1f;hr<=0.9f;hr+=0.1f){
-        int tot=0,dcy=0;for(int t=0;t<TRIALS;t++){unsigned int s=(unsigned int)time(NULL)+t*50000+(int)(hr*1000)*1000;
-        rst<<<1,1>>>();iA<<<ag,bs>>>(da,NA,hr,s);iR<<<rg,bs>>>(dr,NR,s+1);cudaDeviceSynchronize();
-        for(int step=0;step<STEPS;step++){seq<<<ag,bs>>>(da,NA,dr,NR,s,step,10,100);rsp<<<rg,bs>>>(dr,NR,s+step);cudaDeviceSynchronize();}
-        int h1,h2;cudaMemcpyFromSymbol(&h1,d_tot,sizeof(int));cudaMemcpyFromSymbol(&h2,d_dcy,sizeof(int));tot+=h1;dcy+=h2;}
-        printf("%-11.0f%-9d%-9d%-9.2f\n",hr*100,tot/TRIALS,dcy/TRIALS,(float)(tot/TRIALS)/NA);}
-
-    // Mode comparison
-    printf("\nMode              Total     Decayed  vsSim\n");
-    int sim_tot;run_sim(da,dr,bs,ag,rg,&sim_tot);
-    printf("Simultaneous      %-9d%-9s1.00x\n",sim_tot,"N/A");
-
-    int delays[]={5,10,20,40,80};
-    for(int d=0;d<5;d++){int tot,dcy;run_seq(da,dr,bs,ag,rg,delays[d],100,&tot,&dcy);
-    printf("Seq delay=%-7d %-9d%-9d%.2fx\n",delays[d],tot,dcy,(float)tot/sim_tot);}
-
-    // Decay sweep
-    printf("\nDecayTime  Total     Decayed  vsSim\n");
-    int decays[]={30,50,100,200,500};
-    for(int d=0;d<5;d++){int tot,dcy;run_seq(da,dr,bs,ag,rg,10,decays[d],&tot,&dcy);
-    printf("%-10d %-9d%-9d%.2fx\n",decays[d],tot,dcy,(float)tot/sim_tot);}
-
-    cudaFree(da);cudaFree(dr);return 0;
+    int fb=(FOOD+BLK-1)/BLK;
+    printf("=== Temporal Collection Patterns ===\\n");
+    printf("4096 agents, 400 food, grab=12, 3000 steps\\n");
+    printf("Looking for oscillations, waves, bursts...\\n\\n");
+    for(int mode=0;mode<2;mode++){
+        int hc[STEPS];for(int i=0;i<STEPS;i++)hc[i]=0;
+        cudaMemcpyToSymbol(step_col,hc,sizeof(int)*STEPS);
+        int z[1];z[0]=0;cudaMemcpyToSymbol(dcs_v,z,sizeof(int));
+        init_w<<<32,BLK>>>(42);init_f<<<fb,BLK>>>(999);cudaDeviceSynchronize();
+        for(int s=0;s<STEPS;s++){ss<<<32,BLK>>>(s,mode);do_resp<<<fb,BLK>>>(0);cudaDeviceSynchronize();}
+        cudaMemcpyFromSymbol(hc,step_col,sizeof(int)*STEPS);
+        long total=0;for(int i=0;i<STEPS;i++)total+=hc[i];
+        float avg=(float)total/STEPS;
+        // Compute variance and autocorrelation at lag 50
+        float var=0;for(int i=0;i<STEPS;i++){float d=hc[i]-avg;var+=d*d;}var/=STEPS;
+        float autocorr=0;int lag=50;
+        for(int i=0;i<STEPS-lag;i++){float d1=hc[i]-avg;float d2=hc[i+lag]-avg;autocorr+=d1*d2;}
+        autocorr/=(STEPS-lag);autocorr/=var;
+        // Find max and min windows (100-step windows)
+        int maxw=0,minw=99999,maxs=0,mins=0;
+        for(int w=0;w<STEPS-100;w++){int sum=0;for(int j=0;j<100;j++)sum+=hc[w+j];if(sum>maxw){maxw=sum;maxs=w;}if(sum<minw){minw=sum;mins=w;}}
+        printf("Mode %s: total=%ld, avg=%.1f, var=%.1f, autocorr(lag50)=%.3f\\n",mode?"DCS":"NoDCS",total,avg,var,autocorr);
+        printf("  Max window at step %d: %d cols/100 steps (%.1f/step)\\n",maxs,maxw,maxw/100.0);
+        printf("  Min window at step %d: %d cols/100 steps (%.1f/step)\\n",mins,minw,minw/100.0);
+        printf("  Burst ratio: %.2fx\\n\\n",(float)maxw/minw);
+    }
+    return 0;
 }
