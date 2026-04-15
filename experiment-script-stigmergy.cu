@@ -1,0 +1,116 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+#define N 512
+#define FOOD 400
+#define STEPS 3000
+#define W 256
+#define BLK 128
+#define NMODES 3
+#define TRIALS 5
+#define NMARKS 2000
+#define MARK_RADIUS 15.0f
+
+__device__ float cr(unsigned int *s) {
+    *s ^= *s << 13; *s ^= *s >> 17; *s ^= *s << 5;
+    return (*s & 0x7FFFFFFF) / (float)0x7FFFFFFF;
+}
+
+__global__ void simulate(float *scores, int *alive, float *fx, float *fy, int *falive,
+    int steps, int n, int food_count, int w,
+    int mode, unsigned int seed) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n) return;
+    unsigned int rng = seed + tid * 997;
+    float x = cr(&rng)*w, y = cr(&rng)*w, energy = 150.0f, score = 0.0f;
+    float base_angle = tid * 2.39996f;
+    float script_dir[8];
+    for(int i=0;i<8;i++) script_dir[i]=base_angle+i*0.785f;
+    
+    // Shared stigmergy grid (simplified: use local marks)
+    // For GPU simplicity, each agent has local memory of food locations
+    float local_marks[8]; // remember last 8 food locations
+    int nmarks = 0;
+    
+    for(int t=0;t<steps&&energy>0;t++){
+        float dx,dy;
+        float spd = 2.0f;
+        
+        if(mode==0){ // Pure scripted (baseline)
+            int p=t%8;dx=cosf(script_dir[p])*spd;dy=sinf(script_dir[p])*spd;
+        } else if(mode==1){ // Script + leave marks (no reading)
+            int p=t%8;dx=cosf(script_dir[p])*spd;dy=sinf(script_dir[p])*spd;
+            // Mark food locations when found (done in collection below)
+        } else { // Script + read marks (tighten orbit near marks)
+            // Check if near any local mark
+            float near_mark = 0.0f;
+            for(int m=0;m<nmarks;m++){
+                float mdx=local_marks[m]-x,mdy=local_marks[(m+1)%16+8]-y;
+                if(mdx>w/2)mdx-=w;if(mdx<-w/2)mdx+=w;
+                if(mdy>w/2)mdy-=w;if(mdy<-w/2)mdy+=w;
+                if(mdx*mdx+mdy*mdy<MARK_RADIUS*MARK_RADIUS){near_mark=1.0f;break;}
+            }
+            if(near_mark>0.5f) spd=1.0f; // slow down near marks
+            int p=t%8;dx=cosf(script_dir[p])*spd;dy=sinf(script_dir[p])*spd;
+        }
+        
+        float dist=sqrtf(dx*dx+dy*dy);
+        energy-=0.005f+dist*0.003f;
+        x=fmodf(x+dx+w,w);y=fmodf(y+dy+w,w);
+        
+        for(int i=0;i<food_count;i++){
+            if(!falive[i])continue;
+            float fdx=fx[i]-x,fdy=fy[i]-y;
+            if(fdx>w/2)fdx-=w;if(fdx<-w/2)fdx+=w;
+            if(fdy>w/2)fdy-=w;if(fdy<-w/2)fdy+=w;
+            if(fdx*fdx+fdy*fdy<16.0f){
+                int old=atomicExch(&falive[i],0);
+                if(old){
+                    energy=fminf(energy+10.0f,200.0f);score+=1.0f;
+                    // Leave mark at food location
+                    if(mode>=1 && nmarks<8){
+                        local_marks[nmarks]=fx[i];
+                        local_marks[nmarks+8]=fy[i];
+                        nmarks++;
+                    }
+                }
+            }
+        }
+    }
+    scores[tid]=score;alive[tid]=(energy>0)?1:0;
+}
+
+int main(){
+    const char* nm[]={"PureScript","Script+Mark","Script+ReadMark"};
+    printf("=== SCRIPT STIGMERGY: Law 217 ===\n");
+    printf("N=%d Food=%d Steps=%d Trials=%d\n\n",N,FOOD,STEPS,TRIALS);
+    float *d_s,*d_fx,*d_fy;int *d_a,*d_fa;
+    cudaMalloc(&d_s,N*sizeof(float));cudaMalloc(&d_fx,FOOD*sizeof(float));
+    cudaMalloc(&d_fy,FOOD*sizeof(float));cudaMalloc(&d_a,N*sizeof(int));cudaMalloc(&d_fa,FOOD*sizeof(int));
+    float hfx[FOOD],hfy[FOOD];srand(42);
+    for(int i=0;i<FOOD;i++){hfx[i]=((float)rand()/RAND_MAX)*W;hfy[i]=((float)rand()/RAND_MAX)*W;}
+    cudaMemcpy(d_fx,hfx,FOOD*sizeof(float),cudaMemcpyHostToDevice);
+    cudaMemcpy(d_fy,hfy,FOOD*sizeof(float),cudaMemcpyHostToDevice);
+    int blk=(N+BLK-1)/BLK;
+    
+    for(int m=0;m<NMODES;m++){
+        float ts=0,ta=0,tt=0;
+        for(int tr=0;tr<TRIALS;tr++){
+            cudaMemset(d_fa,1,FOOD*sizeof(int));
+            simulate<<<blk,BLK>>>(d_s,d_a,d_fx,d_fy,d_fa,STEPS,N,FOOD,W,m,(unsigned int)(42+tr*1111+m*111));
+            cudaDeviceSynchronize();
+            float hs[N];int ha[N];
+            cudaMemcpy(hs,d_s,N*sizeof(float),cudaMemcpyDeviceToHost);
+            cudaMemcpy(ha,d_a,N*sizeof(int),cudaMemcpyDeviceToHost);
+            float avg=0;int ac=0;float total=0;
+            for(int i=0;i<N;i++){avg+=hs[i];ac+=ha[i];total+=hs[i];}
+            ts+=avg/N;ta+=ac;tt+=total;
+        }
+        ts/=TRIALS;float surv=ta/TRIALS/N*100;tt/=TRIALS;
+        printf("%-18s: score=%.3f surv=%.1f%% fleet=%.1f\n",nm[m],ts,surv,tt);
+    }
+    printf("\n>> Law 217: Can stigmergy help scripted agents?\n");
+    cudaFree(d_s);cudaFree(d_fx);cudaFree(d_fy);cudaFree(d_a);cudaFree(d_fa);
+    return 0;
+}
