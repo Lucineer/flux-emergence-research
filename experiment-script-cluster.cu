@@ -7,7 +7,7 @@
 #define STEPS 3000
 #define W 256
 #define BLK 128
-#define NSPAWNS 4
+#define NMODES 4
 #define TRIALS 5
 
 __device__ float cr(unsigned int *s) {
@@ -16,27 +16,31 @@ __device__ float cr(unsigned int *s) {
 }
 
 __global__ void simulate(float *scores, int *alive, float *fx, float *fy, int *falive,
-    int steps, int n, int food_count, int w, int spawn_mode, unsigned int seed) {
+    int steps, int n, int food_count, int w, int use_steer, int center_spawn, unsigned int seed) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
     if (tid >= n) return;
     unsigned int rng = seed + tid * 997;
-    float x, y;
-    if(spawn_mode==0){x=128.0f;y=128.0f;} // center
-    else if(spawn_mode==1){x=cr(&rng)*w;y=cr(&rng)*w;} // random
-    else if(spawn_mode==2){ // quartered
-        int q=tid%(n/4);
-        float qx=(q<2)?64.0f:192.0f;
-        float qy=(q%2==0)?64.0f:192.0f;
-        x=qx+cr(&rng)*30.0f;y=qy+cr(&rng)*30.0f;
-    } else { // ring
-        float angle=tid*6.2832f/n;
-        x=128.0f+cosf(angle)*100.0f;y=128.0f+sinf(angle)*100.0f;
-    }
-    float energy=150.0f,score=0.0f;
-    float base_angle=tid*2.39996f;
+    float cx=w/2,cy=w/2;
+    float x = center_spawn ? (cx+cr(&rng)*20.0f-10.0f) : (cr(&rng)*w);
+    float y = center_spawn ? (cy+cr(&rng)*20.0f-10.0f) : (cr(&rng)*w);
+    float energy = 150.0f, score = 0.0f;
+    float base_angle = tid * 2.39996f;
     float dir[8];for(int i=0;i<8;i++)dir[i]=base_angle+i*0.785f;
+    float marks_x[10], marks_y[10];int nmarks=0;
     for(int t=0;t<steps&&energy>0;t++){
         int p=t%8;float dx=cosf(dir[p])*2.0f,dy=sinf(dir[p])*2.0f;
+        if(use_steer){
+            float sx=0,sy=0;
+            for(int m=0;m<nmarks;m++){
+                float mx=marks_x[m]-x,my=marks_y[m]-y;
+                if(mx>w/2)mx-=w;if(mx<-w/2)mx+=w;
+                if(my>w/2)my-=w;if(my<-w/2)my+=w;
+                float d=mx*mx+my*my;
+                if(d<100.0f&&d>0.01f){sx-=mx/sqrtf(d)*0.5f;sy-=my/sqrtf(d)*0.5f;}
+            }
+            dx+=sx;dy+=sy;
+            if(t%100==0&&nmarks<10){marks_x[nmarks]=x;marks_y[nmarks]=y;nmarks++;}
+        }
         float dist=sqrtf(dx*dx+dy*dy);energy-=0.005f+dist*0.003f;
         x=fmodf(x+dx+w,w);y=fmodf(y+dy+w,w);
         for(int i=0;i<food_count;i++){
@@ -51,8 +55,10 @@ __global__ void simulate(float *scores, int *alive, float *fx, float *fy, int *f
 }
 
 int main(){
-    const char* nm[]={"Center","Random","Quartered","Ring"};
-    printf("=== SPAWN POSITION: Law 223 ===\nN=%d Food=%d Steps=%d Trials=%d\n\n",N,FOOD,STEPS,TRIALS);
+    int ms[]={0,0,1,1};
+    int cs[]={0,1,0,1};
+    const char* nm[]={"Random+Pure","Center+Pure","Random+Steer","Center+Steer"};
+    printf("=== SPAWN x STEER: Law 240 ===\nN=%d Food=%d Steps=%d Trials=%d\n\n",N,FOOD,STEPS,TRIALS);
     float *d_s,*d_fx,*d_fy;int *d_a,*d_fa;
     cudaMalloc(&d_s,N*sizeof(float));cudaMalloc(&d_fx,FOOD*sizeof(float));
     cudaMalloc(&d_fy,FOOD*sizeof(float));cudaMalloc(&d_a,N*sizeof(int));cudaMalloc(&d_fa,FOOD*sizeof(int));
@@ -61,11 +67,11 @@ int main(){
     cudaMemcpy(d_fx,hfx,FOOD*sizeof(float),cudaMemcpyHostToDevice);
     cudaMemcpy(d_fy,hfy,FOOD*sizeof(float),cudaMemcpyHostToDevice);
     int blk=(N+BLK-1)/BLK;
-    for(int s=0;s<NSPAWNS;s++){
+    for(int m=0;m<NMODES;m++){
         float ts=0,ta=0,tt=0;
         for(int tr=0;tr<TRIALS;tr++){
             cudaMemset(d_fa,1,FOOD*sizeof(int));
-            simulate<<<blk,BLK>>>(d_s,d_a,d_fx,d_fy,d_fa,STEPS,N,FOOD,W,s,(unsigned int)(42+tr*1111+s*111));
+            simulate<<<blk,BLK>>>(d_s,d_a,d_fx,d_fy,d_fa,STEPS,N,FOOD,W,ms[m],cs[m],(unsigned int)(42+tr*1111+m*111));
             cudaDeviceSynchronize();
             float hs[N];int ha[N];cudaMemcpy(hs,d_s,N*sizeof(float),cudaMemcpyDeviceToHost);
             cudaMemcpy(ha,d_a,N*sizeof(int),cudaMemcpyDeviceToHost);
@@ -74,9 +80,9 @@ int main(){
             ts+=avg/N;ta+=ac;tt+=total;
         }
         ts/=TRIALS;float surv=ta/TRIALS/N*100;tt/=TRIALS;
-        printf("%-12s: score=%.3f surv=%.1f%% fleet=%.1f\n",nm[s],ts,surv,tt);
+        printf("%-18s: score=%.3f surv=%.1f%% fleet=%.1f\n",nm[m],ts,surv,tt);
     }
-    printf("\n>> Law 223: Does scripted agent spawn position matter?\n");
+    printf("\n>> Law 240: Does steering rescue center spawn?\n");
     cudaFree(d_s);cudaFree(d_fx);cudaFree(d_fy);cudaFree(d_a);cudaFree(d_fa);
     return 0;
 }
